@@ -22,12 +22,14 @@ final class UDPSender {
     }
 
     func sendOnePacket() {
-        let packet = buildRTPPacket(seq: seq)
-        conn.send(content: packet, completion: .contentProcessed { _ in })
-        print("➡️ Sent RTP seq=\(seq)")
-        seq += 1
-        //for testing Loss
-        if seq%10 == 0 {seq+=1}
+        for num in 1...20{
+            let packet = buildRTPPacket(seq: seq)
+            conn.send(content: packet, completion: .contentProcessed { _ in })
+            print("➡️ Sent RTP seq=\(seq)")
+            seq += 1
+            //for testing Loss
+            if seq%10 == 0 {seq+=1}
+        }
     }
 
     private func buildRTPPacket(seq: UInt16) -> Data {

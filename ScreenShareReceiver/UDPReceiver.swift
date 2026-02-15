@@ -17,6 +17,13 @@ final class UDPReceiver {
     private var received = 0
     private var lost = 0
     private var outOfOrder = 0
+    private let windowSize = 200
+    private var lossRing: [Int] = Array(repeating:0,count:200)
+    private var recvRing: [Int] = Array(repeating:0,count:200)
+    private var winLost: Int = 0
+    private var winRecv: Int = 0
+    private var ringIndex: Int = 0
+    
 
     private let onLog: (String) -> Void
 
@@ -47,6 +54,26 @@ final class UDPReceiver {
         listener = nil
         onLog("UDPReceiver stopped")
     }
+    
+    private func pushWindow(loss:Int, recv:Int){
+        winLost -= lossRing[ringIndex]
+        winRecv -= recvRing[ringIndex]
+        
+        lossRing[ringIndex] = loss
+        recvRing[ringIndex] = recv
+        
+        winLost += loss
+        winRecv += recv
+        
+        ringIndex = (ringIndex+1)%windowSize
+    }
+    
+    private var rollingLossRate: Double{
+        let denom = winLost + winRecv
+        if denom == 0 {return 0.0}
+        
+        return Double(winLost)/Double(denom)
+    }
 
     private func startReceiving(on conn: NWConnection) {
         conn.stateUpdateHandler = { [weak self] state in
@@ -61,45 +88,52 @@ final class UDPReceiver {
     private func receiveLoop(_ conn: NWConnection) {
         conn.receiveMessage { [weak self] data, _, _, error in
             guard let self else { return }
-
+            
             if let error {
                 self.onLog("receiveMessage error: \(error)")
                 return
             }
-            received+=1
+            
             
             if let data, !data.isEmpty {
                 let src = self.describeEndpoint(conn.endpoint)
-
+                
                 if let rtp = RTPPacket.parse(data) {
+                    received+=1
                     let seq = rtp.header.sequenceNumber
                     
                     if let last = lastSeq{
                         if seq == last &+ 1{
                             print("inorder")
+                            pushWindow(loss: 0, recv: 1)
+                            lastSeq = seq
                         }else if seq > last{
                             let missing = Int(seq - last - 1)
                             if missing > 0{
                                 lost+=missing
                                 self.onLog("Loss!")
                             }
+                            pushWindow(loss: missing, recv: 1)
+                            lastSeq = seq
                         }else{
                             outOfOrder+=1
                             onLog("Out of order")
                         }
-                        if seq > last{
-                            lastSeq = seq
-                        }
                     }else{
                         lastSeq = seq
+                        pushWindow(loss: 0, recv: 1)
                     }
                     
                     self.onLog("[RTP] from \(src) seq=\(seq) bytes=\(data.count)")
                 } else {
                     self.onLog("[UDP] from \(src) non-RTP bytes=\(data.count)")
                 }
+                if received % 20 == 0 {
+                    let rate = rollingLossRate * 100.0
+                    onLog("📊 Rolling loss (~\(windowSize) events): \(String(format: "%.2f", rate))% | total lost=\(lost) ooo=\(outOfOrder)")
+                }
             }
-
+            
             self.receiveLoop(conn)
         }
     }
