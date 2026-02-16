@@ -24,6 +24,14 @@ final class UDPReceiver {
     private var winRecv: Int = 0
     private var ringIndex: Int = 0
     
+    // Jitter buffer variabls
+    private var buffer: [UInt16:RTPPacket] = [:]
+    private var expectedSeq: UInt16? = nil
+    private var missingSince: Date? = nil
+    private var missingTimeout: TimeInterval = 0.04
+    private var playoutTimer: DispatchSourceTimer?
+    
+    
 
     private let onLog: (String) -> Void
 
@@ -47,9 +55,14 @@ final class UDPReceiver {
 
         listener.start(queue: queue)
         onLog("UDPReceiver listening on UDP port \(port.rawValue)")
+        
+        startPlayoutTimer()
     }
 
     func stop() {
+        playoutTimer?.cancel()
+        playoutTimer = nil
+        
         listener?.cancel()
         listener = nil
         onLog("UDPReceiver stopped")
@@ -73,6 +86,52 @@ final class UDPReceiver {
         if denom == 0 {return 0.0}
         
         return Double(winLost)/Double(denom)
+    }
+    
+    private func startPlayoutTimer() {
+            let t = DispatchSource.makeTimerSource(queue: queue)
+            t.schedule(deadline: .now(), repeating: .milliseconds(5))
+            t.setEventHandler { [weak self] in
+                self?.timeoutTick()
+            }
+            t.resume()
+            playoutTimer = t
+    }
+    
+    private func timeoutTick(){
+        guard let exp = expectedSeq else {return}
+        
+        if let _ = buffer.removeValue(forKey: exp){
+            received+=1
+            pushWindow(loss: 0, recv: 1)
+            onLog("RELEASE seq=\(exp)")
+            expectedSeq = exp &+ 1
+            missingSince = nil
+            
+            if received % 20 == 0 {
+                            let rate = rollingLossRate * 100.0
+                            onLog("📊 Rolling loss (~\(windowSize) events): \(String(format: "%.2f", rate))% | lost=\(lost) ooo=\(outOfOrder)")
+            }
+            return
+        }
+        
+        if missingSince == nil{
+            missingSince = Date()
+            return
+        }
+        
+        if let start = missingSince, Date().timeIntervalSince(start) >= missingTimeout{
+            lost+=1
+            pushWindow(loss: 1, recv: 1)
+            onLog("🚨 MISSING seq=\(exp)")
+            expectedSeq = exp &+ 1
+            missingSince = nil
+            if received % 20 == 0 {
+                            let rate = rollingLossRate * 100.0
+                            onLog("📊 Rolling loss (~\(windowSize) events): \(String(format: "%.2f", rate))% | lost=\(lost) ooo=\(outOfOrder)")
+            }
+            return
+        }
     }
 
     private func startReceiving(on conn: NWConnection) {
@@ -102,35 +161,15 @@ final class UDPReceiver {
                     received+=1
                     let seq = rtp.header.sequenceNumber
                     
-                    if let last = lastSeq{
-                        if seq == last &+ 1{
-                            print("inorder")
-                            pushWindow(loss: 0, recv: 1)
-                            lastSeq = seq
-                        }else if seq > last{
-                            let missing = Int(seq - last - 1)
-                            if missing > 0{
-                                lost+=missing
-                                self.onLog("Loss!")
-                            }
-                            pushWindow(loss: missing, recv: 1)
-                            lastSeq = seq
-                        }else{
-                            outOfOrder+=1
-                            onLog("Out of order")
-                        }
-                    }else{
-                        lastSeq = seq
-                        pushWindow(loss: 0, recv: 1)
-                    }
+                    if expectedSeq == nil {expectedSeq = seq}
                     
-                    self.onLog("[RTP] from \(src) seq=\(seq) bytes=\(data.count)")
+                    if let exp=expectedSeq,seq < exp{
+                        outOfOrder+=1
+                    }
+                    buffer[seq] = rtp
+                    self.onLog("[ARRIVE] from \(src) seq=\(seq)")
                 } else {
                     self.onLog("[UDP] from \(src) non-RTP bytes=\(data.count)")
-                }
-                if received % 20 == 0 {
-                    let rate = rollingLossRate * 100.0
-                    onLog("📊 Rolling loss (~\(windowSize) events): \(String(format: "%.2f", rate))% | total lost=\(lost) ooo=\(outOfOrder)")
                 }
             }
             
