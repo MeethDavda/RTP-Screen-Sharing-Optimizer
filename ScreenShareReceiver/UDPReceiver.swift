@@ -31,6 +31,15 @@ final class UDPReceiver {
     private var missingTimeout: TimeInterval = 0.04
     private var playoutTimer: DispatchSourceTimer?
     
+    private enum NetworkState{
+        case good
+        case degraded
+        case bad
+    }
+    private var currentState: NetworkState = .good
+    
+    private var lastSenderHost: NWEndpoint.Host?
+    private let controlPort: NWEndpoint.Port = 5000
     
 
     private let onLog: (String) -> Void
@@ -105,12 +114,13 @@ final class UDPReceiver {
             received+=1
             pushWindow(loss: 0, recv: 1)
             onLog("RELEASE seq=\(exp)")
+            evaluateNetworkState()
             expectedSeq = exp &+ 1
             missingSince = nil
             
             if received % 20 == 0 {
                             let rate = rollingLossRate * 100.0
-                            onLog("📊 Rolling loss (~\(windowSize) events): \(String(format: "%.2f", rate))% | lost=\(lost) ooo=\(outOfOrder)")
+                            onLog("Rolling loss (~\(windowSize) events): \(String(format: "%.2f", rate))% | lost=\(lost) ooo=\(outOfOrder)")
             }
             return
         }
@@ -123,15 +133,57 @@ final class UDPReceiver {
         if let start = missingSince, Date().timeIntervalSince(start) >= missingTimeout{
             lost+=1
             pushWindow(loss: 1, recv: 1)
-            onLog("🚨 MISSING seq=\(exp)")
+            onLog("MISSING seq=\(exp)")
             expectedSeq = exp &+ 1
             missingSince = nil
             if received % 20 == 0 {
                             let rate = rollingLossRate * 100.0
-                            onLog("📊 Rolling loss (~\(windowSize) events): \(String(format: "%.2f", rate))% | lost=\(lost) ooo=\(outOfOrder)")
+                            onLog("Rolling loss (~\(windowSize) events): \(String(format: "%.2f", rate))% | lost=\(lost) ooo=\(outOfOrder)")
             }
             return
         }
+    }
+    
+    private func evaluateNetworkState(){
+        let lossPercent = rollingLossRate * 100.0
+        let newState: NetworkState
+        
+        if lossPercent < 3{
+            newState = .good
+        }else if lossPercent < 10{
+            newState = .degraded
+        }else{
+            newState = .bad
+        }
+        
+        if newState != currentState{
+            currentState = newState
+            switch newState{
+            case .good:
+                onLog("Network GOOD (\(String(format: "%.2f", lossPercent))%)")
+            case .degraded:
+                onLog("Network DEGRADED (\(String(format: "%.2f", lossPercent))%)")
+            case .bad:
+                onLog("Network BAD (\(String(format: "%.2f", lossPercent))%)")
+                sendControl("KEYFRAME_REQUEST")
+            }
+        }
+    }
+    
+    private func sendControl(_ message:String){
+        guard let host = lastSenderHost else {return}
+        
+        let conn = NWConnection(host: host, port: controlPort, using: .udp)
+        conn.start(queue: queue)
+        
+        let data = message.data(using: .utf8)!
+        
+        conn.send(content: data, completion: .contentProcessed { _ in
+                conn.cancel()
+            })
+
+        onLog("Sent CONTROL '\(message)' to \(host):\(controlPort.rawValue)")
+        
     }
 
     private func startReceiving(on conn: NWConnection) {
@@ -156,6 +208,9 @@ final class UDPReceiver {
             
             if let data, !data.isEmpty {
                 let src = self.describeEndpoint(conn.endpoint)
+                if case let .hostPort(host, _) = conn.endpoint {
+                    lastSenderHost = host
+                }
                 
                 if let rtp = RTPPacket.parse(data) {
                     received+=1
