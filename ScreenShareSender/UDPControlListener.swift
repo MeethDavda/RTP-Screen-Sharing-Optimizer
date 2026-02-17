@@ -12,6 +12,7 @@ final class UDPControlListener{
     private let port:NWEndpoint.Port
     private let queue = DispatchQueue(label: "sender.control.queue")
     private var listener:NWListener?
+    var onMessage: ((String) -> Void)?
     
     init(listenPort: UInt16 = 5000) {
             self.port = NWEndpoint.Port(rawValue: listenPort)!
@@ -47,6 +48,7 @@ final class UDPControlListener{
                 }
                 if let data, let msg = String(data: data, encoding: .utf8) {
                     print("[CTRL] received:", msg)
+                    self.onMessage?(msg)
                 }
                 self.receiveLoop(conn)
             }

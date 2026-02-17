@@ -8,8 +8,8 @@
 import SwiftUI
 
 struct SenderContentView: View {
-    @State private var sender = UDPSender(receiverIP: "127.0.0.1")
-
+    let sender: UDPSender
+    
         var body: some View {
             VStack(spacing: 16) {
                 Text("Simple RTP Sender")
@@ -22,8 +22,4 @@ struct SenderContentView: View {
             .padding()
             .frame(width: 300, height: 200)
         }
-}
-
-#Preview {
-    SenderContentView()
 }

@@ -20,10 +20,18 @@ final class UDPSender {
         )
         conn.start(queue: .global())
     }
+    
+    func sendKeyframeMarker(){
+        let packet = buildRTPPacket(seq: seq,payload: Data("KEYFRAME".utf8),marker:true)
+        conn.send(content: packet, completion: .contentProcessed {_ in })
+        print("Sent KEYFRAME marker RTP seq=\(seq)")
+        seq += 1
+    }
 
     func sendOnePacket() {
         for num in 1...20{
-            let packet = buildRTPPacket(seq: seq)
+            let payload = Data(repeating: 0xAA, count: 20)
+            let packet = buildRTPPacket(seq: seq,payload: payload,marker:false)
             conn.send(content: packet, completion: .contentProcessed { _ in })
             print("➡️ Sent RTP seq=\(seq)")
             seq += 1
@@ -32,20 +40,21 @@ final class UDPSender {
         }
     }
 
-    private func buildRTPPacket(seq: UInt16) -> Data {
+    private func buildRTPPacket(seq: UInt16,payload:Data,marker:Bool) -> Data {
         var d = Data()
 
         // RTP v2, no padding/extension/CSRC
         d.append(0x80)
 
         // Marker=1, PayloadType=96
-        d.append(0xE0)
+        let m: UInt8 = marker ? 0x80 : 0x00
+        d.append(m | 96)
 
         d.appendUInt16BE(seq)
         d.appendUInt32BE(12345)        // dummy timestamp
         d.appendUInt32BE(0x12345678)   // dummy SSRC
 
-        d.append(Data(repeating: 0xAA, count: 20)) // dummy payload
+        d.append(payload) // dummy payload
         return d
     }
 }

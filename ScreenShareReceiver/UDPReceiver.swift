@@ -134,6 +134,7 @@ final class UDPReceiver {
             lost+=1
             pushWindow(loss: 1, recv: 1)
             onLog("MISSING seq=\(exp)")
+            evaluateNetworkState()
             expectedSeq = exp &+ 1
             missingSince = nil
             if received % 20 == 0 {
@@ -215,6 +216,12 @@ final class UDPReceiver {
                 if let rtp = RTPPacket.parse(data) {
                     received+=1
                     let seq = rtp.header.sequenceNumber
+                    if data.count >= 12 {
+                        let payload = data.dropFirst(12)
+                        if let s = String(data: Data(payload), encoding: .utf8), s == "KEYFRAME" {
+                            onLog("Received KEYFRAME marker RTP seq=\(seq)")
+                        }
+                    }
                     
                     if expectedSeq == nil {expectedSeq = seq}
                     
